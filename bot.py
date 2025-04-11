@@ -217,7 +217,6 @@ async def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_T
 
         thanks_text = (
             "Дякуємо! Ваше оголошення обробляється. 🤝\n"
-            "Очікуйте — ми з вами зв’яжемося! 📞"
         )
         if query.message.photo:
             await query.edit_message_caption(thanks_text)
