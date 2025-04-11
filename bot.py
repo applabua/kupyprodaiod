@@ -9,31 +9,32 @@ from telegram import (
 )
 from telegram.ext import (
     Application,
-    ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ConversationHandler,
     ContextTypes,
     filters,
 )
 
-# Включаем логирование
+# Проект размещён на GitHub: https://applabua.github.io/kupyprodaiod/
+
+# Настраиваем логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # Константы состояний разговора
-PHOTO, DESCRIPTION, PHONE, NAME, CONFIRMATION = range(5)
+# Состояния: PHOTO, DESCRIPTION, TARIFF, PHONE, NAME, CONFIRMATION
+PHOTO, DESCRIPTION, TARIFF, PHONE, NAME, CONFIRMATION = range(6)
 
-# Задаём данные бота и администратора
+# Данные бота и администратора
 BOT_TOKEN = "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw"
 ADMIN_ID = 2045410830
 
-# Глобальная переменная для подсчёта объявлений
+# Счётчик объявлений
 announcement_count = 0
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка команды /start — приветствие и кнопка для создания объявления."""
@@ -43,78 +44,93 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = InlineKeyboardMarkup(keyboard)
     welcome_text = (
         "Привіт! Ви на каналі оголошень **«Купи/Продай Одеська область»** 🛍️\n\n"
-        "Тут ви можете швидко знайти або продати будь-що: техніка, одяг, послуги, нерухомість та інше!\n\n"
+        "Тут ви можете швидко знайти або продати будь-який товар чи послугу у вашому регіоні.\n\n"
         "Натисніть кнопку нижче, щоб розмістити ваше оголошення."
     )
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
     return ConversationHandler.END
-
 
 async def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запуск процесу створення оголошення після натискання кнопки."""
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(
-        "📸 Будь ласка, надішліть фото оголошення (якщо є). Якщо фото немає, використовуйте команду /skip",
+        "📸 Будь ласка, надішліть фото оголошення (якщо є). Якщо фото відсутнє, використовуйте команду /skip"
     )
     return PHOTO
 
-
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка фото объявления."""
+    """Обработка фото оголошення."""
     photo_file = update.message.photo[-1]
-    # Сохраняем file_id для последующей отправки администратору
     context.user_data["photo"] = photo_file.file_id
-    await update.message.reply_text("✏️ Тепер надішліть опис оголошення та ціну:")
+    await update.message.reply_text("✏️ Тепер надішліть опис оголошення та вкажіть його ціну:")
     return DESCRIPTION
-
 
 async def skip_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Пропуск фото объявления."""
+    """Пропуск фото оголошення."""
     context.user_data["photo"] = None
-    await update.message.reply_text("✏️ Тепер надішліть опис оголошення та ціну:")
+    await update.message.reply_text("✏️ Тепер надішліть опис оголошення та вкажіть його ціну:")
     return DESCRIPTION
 
-
 async def description_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка описания объявления."""
+    """Обработка описания оголошення."""
     context.user_data["description"] = update.message.text
-    await update.message.reply_text("📞 Будь ласка, надішліть ваш номер телефону:")
+    # Запит вибору тарифу для оголошення
+    keyboard = [
+        [InlineKeyboardButton("Звичайне оголошення (300 грн)", callback_data="tariff_normal")],
+        [InlineKeyboardButton("ТОП оголошення (500 грн/24 год)", callback_data="tariff_top")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "💰 Вкажіть тип оголошення:\n"
+        "• Звичайне оголошення — 300 грн\n"
+        "• ТОП оголошення — 500 грн на 24 години\n\n"
+        "Будь ласка, зробіть вибір:",
+        reply_markup=reply_markup
+    )
+    return TARIFF
+
+async def tariff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка вибору тарифу оголошення."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == "tariff_normal":
+        context.user_data["tariff"] = "Звичайне оголошення (300 грн)"
+    elif query.data == "tariff_top":
+        context.user_data["tariff"] = "ТОП оголошення (500 грн/24 год)"
+    await query.edit_message_text(
+        text=f"Ви обрали: {context.user_data['tariff']}\n\n📞 Будь ласка, надішліть ваш номер телефону:"
+    )
     return PHONE
 
-
 async def phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка номера телефона."""
+    """Обработка номера телефону."""
     context.user_data["phone"] = update.message.text
     await update.message.reply_text("👤 Вкажіть ваше ім'я:")
     return NAME
 
-
 async def name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка имени отправителя объявления и формирование сводки для подтверждения."""
+    """Обработка імені відправника оголошення та формування сводки для підтвердження."""
     context.user_data["name"] = update.message.text
 
     summary = "📋 Ось ваші дані для оголошення:\n\n"
-    if context.user_data.get("photo"):
-        summary += "🖼 Фото: ✅\n"
-    else:
-        summary += "🖼 Фото: ❌\n"
+    summary += "🖼 Фото: " + ("✅" if context.user_data.get("photo") else "❌") + "\n"
     summary += f"📝 Опис та ціна: {context.user_data.get('description')}\n"
+    summary += f"💰 Тип оголошення: {context.user_data.get('tariff')}\n"
     summary += f"📞 Телефон: {context.user_data.get('phone')}\n"
     summary += f"👤 Ім'я: {context.user_data.get('name')}\n\n"
     summary += "Будь ласка, підтвердіть, чи всі дані вірні."
-
+    
     keyboard = [
         [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm")],
-        [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
+        [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(summary, reply_markup=reply_markup)
     return CONFIRMATION
 
-
 async def confirmation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка подтверждения объявления."""
+    """Обработка підтвердження оголошення."""
     query = update.callback_query
     await query.answer()
     if query.data == "confirm":
@@ -122,15 +138,13 @@ async def confirmation_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         announcement_count += 1
 
         message_text = "🆕 Нове оголошення:\n\n"
-        if context.user_data.get("photo"):
-            message_text += "🖼 Фото: є\n"
-        else:
-            message_text += "🖼 Фото: немає\n"
+        message_text += "🖼 Фото: " + ("є" if context.user_data.get("photo") else "немає") + "\n"
         message_text += f"📝 Опис та ціна: {context.user_data.get('description')}\n"
+        message_text += f"💰 Тип оголошення: {context.user_data.get('tariff')}\n"
         message_text += f"📞 Телефон: {context.user_data.get('phone')}\n"
         message_text += f"👤 Ім'я: {context.user_data.get('name')}\n"
 
-        # Надсилаємо оголошення адміну
+        # Надсилання оголошення адміну
         try:
             if context.user_data.get("photo"):
                 await context.bot.send_photo(
@@ -145,22 +159,17 @@ async def confirmation_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await query.edit_message_text("Дякуємо! Ваше оголошення обробляється та незабаром буде опубліковано. 😊")
     else:
-        await query.edit_message_text(
-            "Оголошення скасовано. Якщо бажаєте, можете почати заново, натиснувши кнопку /start."
-        )
+        await query.edit_message_text("Оголошення скасовано. Якщо бажаєте, можете почати заново, натиснувши кнопку /start.")
     return ConversationHandler.END
-
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Команда для скасування процесу створення оголошення."""
     await update.message.reply_text("Оголошення скасовано. 😞", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-
 # Адміністративні команди
-
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для розсилки повідомлень (тільки для адміністратора).  
+    """Команда для розсилки повідомлень (тільки для адміністратора).
     Використання: /broadcast ваше повідомлення"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -168,7 +177,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if context.args:
         message_to_broadcast = " ".join(context.args)
-        # ЗАМІНІТЬ CHANNEL_ID на фактичний ID каналу або групи
+        # ЗАМІНІТЬ CHANNEL_ID на фактичний ID каналу або групи, куди потрібно розсилати повідомлення
         CHANNEL_ID = -1001234567890  
         try:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=message_to_broadcast)
@@ -179,7 +188,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text("Будь ласка, введіть текст повідомлення після команди /broadcast")
 
-
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для отримання статистики (тільки для адміністратора)."""
     user_id = update.effective_user.id
@@ -188,9 +196,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
 
-
 async def main() -> None:
-    """Основна функція для запуску бота."""
+    """Основна функція запуску бота."""
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -203,10 +210,21 @@ async def main() -> None:
                 MessageHandler(filters.PHOTO, photo_handler),
                 CommandHandler("skip", skip_photo),
             ],
-            DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, description_handler)],
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone_handler)],
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name_handler)],
-            CONFIRMATION: [CallbackQueryHandler(confirmation_handler, pattern="^(confirm|cancel)$")],
+            DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, description_handler)
+            ],
+            TARIFF: [
+                CallbackQueryHandler(tariff_callback, pattern="^(tariff_normal|tariff_top)$")
+            ],
+            PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, phone_handler)
+            ],
+            NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, name_handler)
+            ],
+            CONFIRMATION: [
+                CallbackQueryHandler(confirmation_handler, pattern="^(confirm|cancel)$")
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -227,9 +245,8 @@ async def main() -> None:
             webhook_url=webhook_url,
         )
     else:
-        # Для локального тестування використовуємо polling
+        # Для локального тестування – polling
         await application.run_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
