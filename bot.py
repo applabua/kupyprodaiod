@@ -30,8 +30,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния диалога
+# Состояния диалога для объявления
 COLLECT, CONFIRM1, CONFIRM2 = range(3)
+
+# Состояния диалога для рассылки (начиная с числа, не конфликтующего с объявлением)
+BROADCAST_TEXT = 10
+BROADCAST_BUTTON_CHOICE = 11
+BROADCAST_BUTTON_LABEL = 12
+BROADCAST_BUTTON_URL = 13
 
 # ==== ВАЖНО! Укажите актуальный токен вашего бота ====
 BOT_TOKEN = "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw"
@@ -43,7 +49,7 @@ ADMIN_ID = 2045410830
 announcement_count = 0
 
 # ----------------------------------------------
-# 2) /start — приветствие (фото + кнопка)
+# 2) Команды для работы с объявлениями (как прежде)
 # ----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
@@ -66,9 +72,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ConversationHandler.END
 
-# ----------------------------------------------
-# 3) Обработка нажатия «Розмістити оголошення»
-# ----------------------------------------------
 async def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Инструкции по отправке данных объявления.
@@ -84,15 +87,11 @@ async def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "👤 Ім'я\n\n"
         "Введіть /done, коли завершите введення."
     )
-    # Инициализируем "промежуточное хранилище"
     context.user_data["photo"] = None
     context.user_data["ad_text"] = ""
     await query.message.reply_text(instructions)
     return COLLECT
 
-# ----------------------------------------------
-# 4) Сбор данных объявления (состояние COLLECT)
-# ----------------------------------------------
 async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Сохраняет фото и текст. При вводе /done переходит к подтверждению.
@@ -124,9 +123,6 @@ async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text("❗️ Будь ласка, надішліть лише фото або текст. /done для завершення.")
         return COLLECT
 
-# ----------------------------------------------
-# 5) Первое подтверждение (CONFIRM1)
-# ----------------------------------------------
 async def show_confirmation_1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Показывает предварительный просмотр введённого объявления с кнопками подтверждения.
@@ -141,8 +137,6 @@ async def show_confirmation_1(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Используем effective_message для универсальности (при callback или обычном сообщении)
     effective_message = update.message or update.effective_message
     await effective_message.reply_text("Ось попередній перегляд👇")
     if context.user_data["photo"]:
@@ -161,7 +155,6 @@ async def confirmation_handler_1(update: Update, context: ContextTypes.DEFAULT_T
     """
     query = update.callback_query
     await query.answer()
-
     if query.data == "confirm1":
         return await show_confirmation_2(query, context)
     else:
@@ -171,9 +164,6 @@ async def confirmation_handler_1(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("❌ Оголошення скасовано. Почніть заново командою /start.")
         return ConversationHandler.END
 
-# ----------------------------------------------
-# 6) Второе подтверждение (CONFIRM2)
-# ----------------------------------------------
 async def show_confirmation_2(query, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Показывает финальный вид объявления (как оно будет опубликовано).
@@ -187,7 +177,6 @@ async def show_confirmation_2(query, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     await query.message.reply_text("Ось фінальний вигляд👇")
     if context.user_data["photo"]:
         await query.message.reply_photo(
@@ -209,13 +198,11 @@ async def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_T
     if query.data == "publish":
         global announcement_count
         announcement_count += 1
-
         admin_message = (
             "Нове оголошення:\n\n"
             f"{context.user_data['ad_text']}\n\n"
             f"Зв'язатися з користувачем: tg://user?id={query.from_user.id}"
         )
-
         try:
             if context.user_data["photo"]:
                 await context.bot.send_photo(
@@ -236,7 +223,6 @@ async def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_caption(thanks_text)
         else:
             await query.edit_message_text(thanks_text)
-
         return ConversationHandler.END
     else:
         if query.message.photo:
@@ -245,9 +231,6 @@ async def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("❌ Оголошення скасовано. Спробуйте ще раз /start.")
         return ConversationHandler.END
 
-# ----------------------------------------------
-# 7) Фallback: /cancel в любое время
-# ----------------------------------------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Завершает разговор и очищает клавиатуру.
@@ -257,28 +240,103 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ----------------------------------------------
-# 8) Админ-команды: /broadcast и /stats
+# 3) Реализация интерактивного бродкаста для ADMIN
 # ----------------------------------------------
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    /broadcast: Рассылает сообщение в заданный канал (только ADMIN_ID).
+    Начало диалога для рассылки. Проверяет права администратора и запрашивает текст сообщения.
     """
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("🚫 У вас немає прав для виконання цієї команди.")
-        return
-    if context.args:
-        message_to_broadcast = " ".join(context.args)
-        # Замените на реальный ID канала или группы
-        CHANNEL_ID = -1001234567890
-        try:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=message_to_broadcast)
-            await update.message.reply_text("✅ Повідомлення успішно відправлено.")
-        except Exception as e:
-            logger.error(f"Помилка розсилки: {e}")
-            await update.message.reply_text("🚫 Помилка при розсилці повідомлення.")
-    else:
-        await update.message.reply_text("Введіть текст повідомлення після команди /broadcast.")
+        return ConversationHandler.END
+    await update.message.reply_text("Введіть текст повідомлення для розсилки:")
+    return BROADCAST_TEXT
 
+async def broadcast_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Сохраняет текст сообщения для рассылки и спрашивает, нужна ли кнопка-ссилка.
+    """
+    text = update.message.text.strip()
+    context.user_data["broadcast_text"] = text
+
+    keyboard = [
+        [InlineKeyboardButton("Так", callback_data="button_yes")],
+        [InlineKeyboardButton("Ні", callback_data="button_no")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Бажаєте додати кнопку з посиланням під повідомленням?", reply_markup=reply_markup)
+    return BROADCAST_BUTTON_CHOICE
+
+async def broadcast_button_choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обрабатывает выбор — добавлять кнопку или нет.
+    """
+    query = update.callback_query
+    await query.answer()
+    if query.data == "button_yes":
+        await query.edit_message_text("Введіть назву кнопки:")
+        return BROADCAST_BUTTON_LABEL
+    else:
+        # Если кнопка не нужна – переходим к отправке сообщения
+        return await broadcast_final(update, context)
+
+async def broadcast_button_label_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Сохраняет название кнопки и запрашивает URL для кнопки.
+    """
+    button_label = update.message.text.strip()
+    context.user_data["broadcast_button_label"] = button_label
+    await update.message.reply_text("Введіть URL для кнопки:")
+    return BROADCAST_BUTTON_URL
+
+async def broadcast_button_url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Сохраняет URL кнопки и отправляет сообщение в канал.
+    """
+    button_url = update.message.text.strip()
+    context.user_data["broadcast_button_url"] = button_url
+    return await broadcast_final(update, context)
+
+async def broadcast_final(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Отправляет сообщение в заданный канал, добавляя кнопку если она указана.
+    """
+    CHANNEL_ID = -1001234567890  # Укажите реальный ID канала
+    text = context.user_data.get("broadcast_text", "")
+    # Если были переданы данные для кнопки, создаём разметку
+    if "broadcast_button_label" in context.user_data and "broadcast_button_url" in context.user_data:
+        button_label = context.user_data["broadcast_button_label"]
+        button_url = context.user_data["broadcast_button_url"]
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_label, url=button_url)]])
+    else:
+        reply_markup = None
+
+    try:
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=text, reply_markup=reply_markup)
+        # Ответ админу: сообщение отправлено
+        if update.callback_query:
+            await update.callback_query.edit_message_text("✅ Повідомлення успішно відправлено.")
+        else:
+            await update.message.reply_text("✅ Повідомлення успішно відправлено.")
+    except Exception as e:
+        logger.error(f"Помилка розсилки: {e}")
+        if update.callback_query:
+            await update.callback_query.edit_message_text("🚫 Помилка при розсилці повідомлення.")
+        else:
+            await update.message.reply_text("🚫 Помилка при розсилці повідомлення.")
+
+    return ConversationHandler.END
+
+async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Отмена рассылки.
+    """
+    await update.message.reply_text("Розсилка скасована.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# ----------------------------------------------
+# 4) Команда статистики (как прежде)
+# ----------------------------------------------
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     /stats: Статистика (только ADMIN_ID).
@@ -289,11 +347,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
 
 # ----------------------------------------------
-# 9) Основная функция main() для запуска (webhook / polling)
+# 5) Основная функция main() для запуска (webhook / polling)
 # ----------------------------------------------
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Диалог для работы с объявлениями
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(post_ad_callback, pattern="^post_ad$"),
@@ -306,11 +365,25 @@ async def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
-        per_chat=True  # Убрали per_message=True, чтобы сохранялся контекст разговора
+        per_chat=True
     )
-
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("broadcast", broadcast))
+
+    # Диалог для рассылки (broadcast) с кнопочным выбором для кнопки-ссылки
+    broadcast_handler = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", broadcast_start)],
+        states={
+            BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_text_handler)],
+            BROADCAST_BUTTON_CHOICE: [CallbackQueryHandler(broadcast_button_choice_handler, pattern="^(button_yes|button_no)$")],
+            BROADCAST_BUTTON_LABEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_button_label_handler)],
+            BROADCAST_BUTTON_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_button_url_handler)],
+        },
+        fallbacks=[CommandHandler("cancel", broadcast_cancel)],
+        per_user=True,
+        per_chat=True,
+    )
+    application.add_handler(broadcast_handler)
+
     application.add_handler(CommandHandler("stats", stats))
 
     port = int(os.environ.get("PORT", "8443"))
