@@ -1,14 +1,13 @@
 import os
 import logging
 import asyncio
-import nest_asyncio  # для работы с event loop в Heroku
+import nest_asyncio  # для уникнення помилки закриття запущеного event loop
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardRemove,
-    LabeledPrice,
 )
 from telegram.ext import (
     Application,
@@ -17,14 +16,13 @@ from telegram.ext import (
     MessageHandler,
     ConversationHandler,
     ContextTypes,
-    PreCheckoutQueryHandler,
     filters,
 )
 
-# Применяем nest_asyncio для корректного функционирования event loop
+# Застосовуємо nest_asyncio для коректної роботи event loop
 nest_asyncio.apply()
 
-# Ссылка на проект на GitHub:
+# Посилання на проект на GitHub:
 # https://applabua.github.io/kupyprodaiod/
 
 # Налаштування логування
@@ -33,179 +31,167 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Константы состояний разговора
-AD_DETAILS, CONFIRMATION = range(1, 3)  # AD_DETAILS = 1, CONFIRMATION = 2
+# Константи для станів діалогу (оновлено)
+AD_DETAILS, CONFIRMATION1, CONFIRMATION2 = range(3)
 
-# Данные бота и администратора
+# Дані бота та адміністратора
 BOT_TOKEN = "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw"
 ADMIN_ID = 2045410830
 
-# Токен платёжного провайдера (замените на реальный, полученный от Telegram)
-PAYMENT_PROVIDER_TOKEN = "PROVIDER_TOKEN_HERE"  # Замените на реальный токен
-
-# --------------------- Команды бота --------------------- #
+# Лічильник оголошень
+announcement_count = 0
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обработка команды /start.
-    Отправляет приветственное сообщение с картинкой, информирующее о возможности быстрого размещения объявления
-    и указывающее стоимость (300 грн). В сообщении присутствует кнопка для размещения объявления.
-    """
-    greeting_text = (
-        "Привіт!\n\n"
-        "За допомогою цього бота ви можете швидко розмістити своє оголошення.\n"
-        "Вартість розміщення оголошення – 300 грн.\n\n"
+    """Обробка команди /start — відправляє привітання з картинкою."""
+    image_url = "https://i.ibb.co/Y7k6mN9G/image.png"
+    welcome_text = (
+        "Привіт! 😊 Ласкаво просимо до бота для швидкого розміщення оголошення!\n\n"
+        "За допомогою цього бота ви можете легко та швидко опублікувати ваше оголошення.\n"
+        "Розміщення оголошення коштує лише 200 грн. 🛍️\n\n"
         "Натисніть кнопку нижче, щоб розпочати."
     )
-    keyboard = [
-        [InlineKeyboardButton("Розмістити оголошення 📢", callback_data="post_ad")]
-    ]
+    keyboard = [[InlineKeyboardButton("Розмістити оголошення 📢", callback_data="post_ad")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Отправляем картинку с приветствием
-    if update.message:
-        await update.message.reply_photo(
-            photo="https://i.ibb.co/Y7k6mN9G/image.png",
-            caption=greeting_text,
-            reply_markup=reply_markup,
-        )
-    else:
-        # Если update пришёл не как сообщение, отправим текст
-        await update.effective_chat.send_message(greeting_text, reply_markup=reply_markup)
+    await update.message.reply_photo(photo=image_url, caption=welcome_text, reply_markup=reply_markup)
     return ConversationHandler.END
 
-
 async def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обработка нажатия кнопки "Розмістити оголошення".
-    Просит пользователя отправить объявление одним сообщением, в котором должны быть:
-    – Фото (якщо є), опис, ціна, номер телефону, ім'я та посилання.
-    """
+    """Старт процесу розміщення оголошення після натискання кнопки."""
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text(
-        "Будь ласка, надішліть ваше оголошення одним повідомленням.\n"
-        "Повідомлення має містити фото (якщо є), опис, ціну, номер телефону, ваше ім'я та посилання."
+    prompt_text = (
+        "📣 Будь ласка, надішліть ваше оголошення в одному повідомленні.\n\n"
+        "Ви можете додати фото (якщо потрібно) та вказати опис, ціну, номер телефону, ім'я "
+        "та посилання, якщо потрібно.\n\n"
+        "Наприклад:\n"
+        "Опис: Продається велосипед, 5000 грн\n"
+        "Телефон: 123456789\n"
+        "Ім'я: Іван\n"
+        "Посилання: www.example.com\n\n"
+        "Надішліть, будь ласка, деталі вашого оголошення."
     )
+    await query.message.reply_text(prompt_text)
     return AD_DETAILS
-
 
 async def ad_details_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Обработка введённых пользователем данных объявления.
-    Если есть прикреплённое фото, сохраняем его file_id и используем подпись как детали объявления;
-    иначе — используем текст сообщения.
-    После сохранения показываем предпросмотр объявления и просим подтвердить.
+    Обробка даних оголошення.
+    Якщо фото надіслано, зберігається file_id, а текст – з caption.
+    Якщо немає фото – зберігається текст повідомлення.
     """
     if update.message.photo:
-        # Сохраняем фото и используем caption как описание (если имеется)
-        context.user_data["photo"] = update.message.photo[-1].file_id
-        if update.message.caption:
-            context.user_data["ad_details"] = update.message.caption
-        else:
-            context.user_data["ad_details"] = "Без опису"
+        photo_file = update.message.photo[-1]
+        context.user_data["photo"] = photo_file.file_id
+        ad_text = update.message.caption
+        if not ad_text:
+            await update.message.reply_text("Будь ласка, додайте також текст оголошення у опис фото.")
+            return AD_DETAILS
     else:
         context.user_data["photo"] = None
-        context.user_data["ad_details"] = update.message.text
-
-    preview_text = (
-        "Ось як буде виглядати ваше оголошення:\n\n"
-        f"{context.user_data['ad_details']}\n\n"
-        "Вартість розміщення оголошення: 300 грн.\n\n"
-        "Підтвердіть, будь ласка, якщо всі дані вірні."
+        ad_text = update.message.text
+    context.user_data["ad_text"] = ad_text
+    summary = (
+        "📋 Ось ваші дані оголошення:\n\n"
+        f"🖼 Фото: {'✅' if context.user_data['photo'] else '❌'}\n"
+        f"📝 Деталі оголошення: {ad_text}\n"
+        f"💰 Ціна розміщення: 200 грн\n\n"
+        "Підтвердіть, чи всі дані вірні."
     )
     keyboard = [
-        [InlineKeyboardButton("Підтвердити", callback_data="confirm_ad")],
-        [InlineKeyboardButton("Скасувати", callback_data="cancel_ad")],
+        [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm1")],
+        [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if context.user_data.get("photo"):
-        await update.message.reply_photo(
-            photo=context.user_data["photo"],
-            caption=preview_text,
-            reply_markup=reply_markup,
-        )
-    else:
-        await update.message.reply_text(preview_text, reply_markup=reply_markup)
-    return CONFIRMATION
+    await update.message.reply_text(summary, reply_markup=reply_markup)
+    return CONFIRMATION1
 
-
-async def ad_confirmation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обработка подтверждения предпросмотра объявления.
-    Если пользователь подтверждает, отправляется инвойс для оплаты.
-    Если отменяет — объявление счищается.
-    """
+async def confirmation1_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Перший крок підтвердження – показ даних для перевірки."""
     query = update.callback_query
     await query.answer()
-    if query.data == "confirm_ad":
-        # Отправляем инвойс на оплату 300 грн.
-        prices = [LabeledPrice("Оплата розміщення оголошення", 30000)]  # 300 грн * 100
-        await context.bot.send_invoice(
-            chat_id=query.from_user.id,
-            title="Оплата розміщення оголошення",
-            description="Оплатіть 300 грн для розміщення оголошення",
-            payload="ad_payment",
-            provider_token=PAYMENT_PROVIDER_TOKEN,
-            currency="UAH",
-            prices=prices,
-            start_parameter="ad_payment",
+    if query.data == "confirm1":
+        preview = (
+            "🆕 Прев'ю вашого оголошення:\n\n"
+            f"📝 {context.user_data.get('ad_text')}\n"
+            f"💰 Ціна розміщення: 200 грн"
         )
-        await query.edit_message_text("Інвойс відправлено. Будь ласка, здійсніть оплату.")
+        keyboard = [
+            [InlineKeyboardButton("✅ Публікувати", callback_data="publish")],
+            [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if context.user_data.get("photo"):
+            await query.message.reply_photo(photo=context.user_data.get("photo"), caption=preview, reply_markup=reply_markup)
+        else:
+            await query.message.reply_text(preview, reply_markup=reply_markup)
+        return CONFIRMATION2
+    else:
+        await query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
+        return ConversationHandler.END
+
+async def confirmation2_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Фінальне підтвердження – після нього оголошення надсилається адміністратору."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == "publish":
+        global announcement_count
+        announcement_count += 1
+
+        admin_message = (
+            "🆕 Нове оголошення:\n\n"
+            f"📝 Деталі: {context.user_data.get('ad_text')}\n"
+            f"💰 Ціна розміщення: 200 грн\n"
+            f"🔗 Зв'язатися з користувачем: tg://user?id={update.effective_user.id}"
+        )
+        try:
+            if context.user_data.get("photo"):
+                await context.bot.send_photo(chat_id=ADMIN_ID, photo=context.user_data.get("photo"), caption=admin_message)
+            else:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
+        except Exception as e:
+            logger.error(f"Помилка при відправленні оголошення адміну: {e}")
+        await query.edit_message_text("Дякуємо! Ваше оголошення обробляється та скоро буде опубліковано. 😊")
         return ConversationHandler.END
     else:
         await query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
         return ConversationHandler.END
 
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обработка команды /cancel — завершение процесса создания объявления.
-    """
+    """Команда для скасування процесу розміщення оголошення."""
     await update.message.reply_text("Оголошення скасовано. 😞", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# --- Адміністративні команди --- #
 
-# --------------------- Обработчики платежей --------------------- #
-
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Обработка pre-checkout запроса, отвечаем OK для продолжения оплаты.
-    """
-    query = update.pre_checkout_query
-    try:
-        await query.answer(ok=True)
-    except Exception as e:
-        logger.error(f"PreCheckoutQuery error: {e}")
-
-
-async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Обработка успешного платежа.
-    После оплаты отправляются данные объявления админу, а пользователю – уведомление об успешной оплате.
-    """
-    user_data = context.user_data
-    order_details = "Нове оголошення:\n\n"
-    if user_data.get("photo"):
-        order_details += "Фото: є\n"
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /broadcast для розсилки повідомлень (тільки для адміністратора)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
+        return
+    if context.args:
+        message_to_broadcast = " ".join(context.args)
+        # Замініть CHANNEL_ID на фактичний ID каналу або групи для розсилки
+        CHANNEL_ID = -1001234567890  
+        try:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=message_to_broadcast)
+            await update.message.reply_text("✅ Повідомлення відправлено до каналу.")
+        except Exception as e:
+            logger.error(f"Помилка розсилки: {e}")
+            await update.message.reply_text("🚫 Помилка при відправленні повідомлення.")
     else:
-        order_details += "Фото: відсутнє\n"
-    order_details += f"Деталі оголошення: {user_data.get('ad_details', '')}\n"
-    order_details += f"Користувач: {update.effective_user.full_name} (ID: {update.effective_user.id})"
-    try:
-        if user_data.get("photo"):
-            await context.bot.send_photo(chat_id=ADMIN_ID, photo=user_data["photo"], caption=order_details)
-        else:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=order_details)
-    except Exception as e:
-        logger.error(f"Помилка при відправленні оголошення адміну: {e}")
-    await update.message.reply_text("Ваше оголошення успішно оплачено та відправлено на модерацію. Дякуємо!")
-    # Очищаем данные пользователя, если необходимо
-    context.user_data.clear()
+        await update.message.reply_text("Введіть текст повідомлення після команди /broadcast.")
 
-
-# --------------------- Главная функция --------------------- #
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /stats для отримання статистики (тільки для адміністратора)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
+        return
+    await update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
 
 async def main() -> None:
+    """Основна функція запуску бота."""
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -215,17 +201,17 @@ async def main() -> None:
         ],
         states={
             AD_DETAILS: [MessageHandler(filters.TEXT | filters.PHOTO, ad_details_handler)],
-            CONFIRMATION: [CallbackQueryHandler(ad_confirmation_callback, pattern="^(confirm_ad|cancel_ad)$")],
+            CONFIRMATION1: [CallbackQueryHandler(confirmation1_handler, pattern="^(confirm1|cancel)$")],
+            CONFIRMATION2: [CallbackQueryHandler(confirmation2_handler, pattern="^(publish|cancel)$")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     application.add_handler(conv_handler)
-    # Обработчики платежей
-    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("stats", stats))
 
-    # Настройка запуска: через webhook (если задан HEROKU_APP_NAME) или polling
+    # Налаштування запуску: використання webhook або polling
     port = int(os.environ.get("PORT", "8443"))
     HEROKU_APP_NAME = os.environ.get("HEROKU_APP_NAME")
     if HEROKU_APP_NAME:
