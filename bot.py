@@ -301,7 +301,8 @@ async def broadcast_final(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     Отправляет сообщение в заданный канал, добавляя кнопку если она указана.
     """
-    CHANNEL_ID = -1001234567890  # Укажите реальный ID канала
+    # Обновлённый ID канала
+    CHANNEL_ID = 1002647717586  
     text = context.user_data.get("broadcast_text", "")
     # Если были переданы данные для кнопки, создаём разметку
     if "broadcast_button_label" in context.user_data and "broadcast_button_url" in context.user_data:
