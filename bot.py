@@ -1,6 +1,7 @@
 import os
 import logging
-import nest_asyncio  # Для уникнення проблем із event loop
+import asyncio
+import nest_asyncio
 
 from telegram import (
     Update,
@@ -18,29 +19,34 @@ from telegram.ext import (
     filters,
 )
 
-# Застосовуємо nest_asyncio для коректної роботи event loop
+# --------------------------------------------------------------------
+#            1. БАЗОВІ НАЛАШТУВАННЯ ТА ГЛОБАЛЬНІ ЗМІННІ
+# --------------------------------------------------------------------
+# Дозволяємо повторне використання існуючого event-loop (Heroku/Jupyter)
 nest_asyncio.apply()
 
-# Налаштування логування
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # Стан розмови
-AD_DETAILS, CONFIRMATION1, CONFIRMATION2 = range(3)
+COLLECT, CONFIRM1, CONFIRM2 = range(3)
 
 # Дані бота та адміністратора
-BOT_TOKEN = "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw"
-ADMIN_ID = 2045410830
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw")
+ADMIN_ID = 2045410830  # замініть на ваш ідентифікатор
 
-# Лічильник оголошень
+# Лічильник (умовна статистика)
 announcement_count = 0
 
-def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# --------------------------------------------------------------------
+#                    2. ХЕНДЛЕРИ СТАРТУ ТА ГОЛОВНОЇ КНОПКИ
+# --------------------------------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Обробка команди /start — відправляє привітальне повідомлення з картинкою
-    та кнопкою для розміщення оголошення.
+    Команда /start: надсилає фото, привітальний текст та кнопку «Розмістити оголошення».
     """
     image_url = "https://i.ibb.co/Y7k6mN9G/image.png"
     welcome_text = (
@@ -51,222 +57,319 @@ def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     keyboard = [[InlineKeyboardButton("Розмістити оголошення 📢", callback_data="post_ad")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_photo(photo=image_url, caption=welcome_text, reply_markup=reply_markup)
+
+    await update.message.reply_photo(
+        photo=image_url,
+        caption=welcome_text,
+        reply_markup=reply_markup
+    )
+    # Повертаємо ConversationHandler.END, бо поки розмова не почалась
     return ConversationHandler.END
 
-def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def post_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Обробка натискання кнопки «Розмістити оголошення».
-    Пропонуємо користувачу відправити всі дані одним повідомленням:
-    фото (за бажанням), опис, ціну, номер телефону та ім'я.
+    Починаємо процес збору даних про оголошення.
+    Пояснюємо користувачеві, що можна надсилати фото й текст у різних повідомленнях.
     """
     query = update.callback_query
-    query.answer()
+    await query.answer()
+
     instructions = (
-        "Будь ласка, надішліть одним повідомленням:\n"
+        "Будь ласка, надішліть усе необхідне для оголошення (в довільній послідовності):\n"
         "• Фото (за бажанням)\n"
         "• Опис оголошення\n"
         "• Ціну\n"
         "• Номер телефону\n"
         "• Ім'я\n\n"
-        "Наприклад:\n"
-        "«Продається велосипед, 5000 грн, Телефон: 123456789, Ім'я: Іван».\n"
-        "Якщо додаєте фото, текст додайте до підпису."
+        "Якщо спочатку надсилаєте фото без підпису — у наступному повідомленні додайте текст.\n"
+        "Можете також надіслати все одразу як фото з підписом.\n"
+        "Надішліть /done, коли закінчите або якщо все вже відправили."
     )
-    query.message.reply_text(instructions)
-    return AD_DETAILS
+    await query.message.reply_text(instructions)
 
-def ad_details_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Ініціалізуємо user_data
+    context.user_data["photo"] = None
+    context.user_data["ad_text"] = ""
+    return COLLECT
+
+# --------------------------------------------------------------------
+#             3. ГОЛОВНИЙ ХЕНДЛЕР ЗБОРУ ДАНИХ (COLLECT)
+# --------------------------------------------------------------------
+async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Отримуємо дані оголошення від користувача (фото + підпис або лише текст).
-    Зберігаємо отримані дані й показуємо користувачу перший екран підтвердження.
+    Збирає фото та текст із кількох повідомлень у довільному порядку.
+    Користувач надсилає фото і/або текст. Якщо з'являється фото без підпису, зберігаємо file_id.
+    Якщо з'являється текст, додаємо його до загального ad_text.
+    Якщо користувач набрав /done, переходимо до першого підтвердження.
     """
     if update.message.photo:
+        # Якщо в повідомленні є фото
         photo_file = update.message.photo[-1]
         context.user_data["photo"] = photo_file.file_id
-        ad_text = update.message.caption
-        if not ad_text:
-            update.message.reply_text(
-                "Ви надіслали фото без підпису.\nБудь ласка, додайте опис (текст) у підпис до фото."
-            )
-            return AD_DETAILS
-    else:
-        context.user_data["photo"] = None
-        ad_text = update.message.text
+        caption = update.message.caption
+        if caption:
+            # Додаємо caption до загального тексту
+            existing_text = context.user_data["ad_text"]
+            context.user_data["ad_text"] = existing_text + "\n" + caption
+        await update.message.reply_text("Фото збережено. Якщо треба додати ще дані, надішліть текст або інше фото.")
+        return COLLECT
 
-    context.user_data["ad_text"] = ad_text
+    elif update.message.text:
+        # Перевіряємо, чи це /done
+        if update.message.text.strip().lower() == "/done":
+            # Якщо текст відсутній узагалі, просимо додати
+            if not context.user_data["ad_text"].strip() and not context.user_data["photo"]:
+                await update.message.reply_text(
+                    "Ви ще нічого не додали (ані фото, ані текст). Будь ласка, додайте хоч якусь інформацію."
+                )
+                return COLLECT
+            # Інакше переходимо до попереднього перегляду
+            return await show_confirmation_1(update, context)
 
+        # Якщо звичайний текст
+        existing_text = context.user_data["ad_text"]
+        # Додаємо новий текст до існуючого з переносом рядка
+        context.user_data["ad_text"] = (existing_text + "\n" + update.message.text).strip()
+        await update.message.reply_text("Текст додано. Якщо все, надішліть /done, інакше можна ще додати дані.")
+        return COLLECT
+
+    # Якщо прийшло якесь інше повідомлення (документ, стікер тощо)
+    await update.message.reply_text("Наразі бот приймає лише фото, текст або команду /done.")
+    return COLLECT
+
+# --------------------------------------------------------------------
+#                 4. ПЕРШЕ ПІДТВЕРДЖЕННЯ (CONFIRM1)
+# --------------------------------------------------------------------
+async def show_confirmation_1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Показує користувачеві перший екран підтвердження:
+    - Фото (якщо є)
+    - Зібраний текст
+    Користувач може підтвердити або скасувати.
+    """
     preview_text = (
-        "Ви надали такі дані:\n\n"
-        f"{ad_text}\n\n"
+        "Ось що ви надали:\n\n"
+        f"{context.user_data['ad_text']}\n\n"
         "Підтвердити чи скасувати?"
     )
+
     keyboard = [
         [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm1")],
         [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Оскільки тут вперше відправляємо прев’ю, робимо це у вигляді нового повідомлення
     if context.user_data["photo"]:
-        update.message.reply_photo(
+        await update.message.reply_photo(
             photo=context.user_data["photo"],
             caption=preview_text,
             reply_markup=reply_markup
         )
     else:
-        update.message.reply_text(preview_text, reply_markup=reply_markup)
+        await update.message.reply_text(preview_text, reply_markup=reply_markup)
 
-    return CONFIRMATION1
+    return CONFIRM1
 
-def confirmation_handler_1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def confirmation_handler_1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Перший крок підтвердження: якщо користувач підтверджує, відправляємо
-    фінальний прев’ю оголошення, яке виглядатиме в каналі.
-    У випадку скасування використовуємо edit_message_caption (якщо фото є)
-    або edit_message_text.
+    Якщо користувач натиснув «Підтвердити» — показуємо "фінальний" вигляд (як в каналі).
+    Якщо «Скасувати» — редагуємо повідомлення і завершуємо розмову.
     """
     query = update.callback_query
-    query.answer()
+    await query.answer()
+
     if query.data == "confirm1":
-        final_preview_text = (
-            "Нове оголошення:\n\n"
-            f"{context.user_data.get('ad_text')}"
-        )
-        keyboard = [
-            [InlineKeyboardButton("✅ Підтвердити публікацію", callback_data="publish")],
-            [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        if context.user_data["photo"]:
-            query.message.reply_photo(
-                photo=context.user_data["photo"],
-                caption=final_preview_text,
-                reply_markup=reply_markup
-            )
-        else:
-            query.message.reply_text(final_preview_text, reply_markup=reply_markup)
-        return CONFIRMATION2
+        return await show_confirmation_2(query, context)
     else:
+        # Скасування
         if query.message.photo:
-            query.edit_message_caption("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
+            # Якщо це фотоповідомлення з caption
+            await query.edit_message_caption("Оголошення скасовано. Якщо бажаєте, почніть заново /start.")
         else:
-            query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
+            await query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново /start.")
         return ConversationHandler.END
 
-def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# --------------------------------------------------------------------
+#               5. ДРУГЕ (ФІНАЛЬНЕ) ПІДТВЕРДЖЕННЯ (CONFIRM2)
+# --------------------------------------------------------------------
+async def show_confirmation_2(query, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Фінальне підтвердження: при згоді оголошення надсилається адміністратору,
-    а користувачу відправляється повідомлення:
-    "Дякуємо! Ваше оголошення обробляється. Очікуйте — ми з вами зв’яжемося."
-    При скасуванні застосовується аналогічне редагування повідомлення.
+    Відправляє "фінальне прев’ю" повідомлення: саме так воно виглядатиме у каналі.
+    """
+    final_preview_text = (
+        "Нове оголошення:\n\n"
+        f"{context.user_data['ad_text']}"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ Опублікувати", callback_data="publish")],
+        [InlineKeyboardButton("❌ Скасувати", callback_data="cancel")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Надсилаємо нове повідомлення з прев’ю (щоб не плутатися з редагуванням)
+    if context.user_data["photo"]:
+        # Відправляємо нове повідомлення у тому ж чаті
+        await query.message.reply_photo(
+            photo=context.user_data["photo"],
+            caption=final_preview_text,
+            reply_markup=reply_markup
+        )
+    else:
+        await query.message.reply_text(final_preview_text, reply_markup=reply_markup)
+    return CONFIRM2
+
+async def confirmation_handler_2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Фінальне рішення: якщо «publish» — відправляємо адміну,
+    якщо «cancel» — скасовуємо.
     """
     query = update.callback_query
-    query.answer()
+    await query.answer()
+
     if query.data == "publish":
         global announcement_count
         announcement_count += 1
 
+        # Формуємо повідомлення адміну
         admin_message = (
             "Нове оголошення:\n\n"
-            f"{context.user_data.get('ad_text')}\n\n"
-            f"Зв'язатися з користувачем: tg://user?id={update.effective_user.id}"
+            f"{context.user_data['ad_text']}\n\n"
+            f"Зв'язатися з користувачем: tg://user?id={query.from_user.id}"
         )
         try:
             if context.user_data["photo"]:
-                context.bot.send_photo(
+                await context.bot.send_photo(
                     chat_id=ADMIN_ID,
                     photo=context.user_data["photo"],
                     caption=admin_message
                 )
             else:
-                context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
+                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
         except Exception as e:
             logger.error(f"Помилка при відправленні оголошення адміну: {e}")
 
-        final_text = (
+        # Повідомляємо користувачу
+        thanks_text = (
             "Дякуємо! Ваше оголошення обробляється.\n"
             "Очікуйте — ми з вами зв’яжемося."
         )
+        # Якщо це повідомлення з фото
         if query.message.photo:
-            query.edit_message_caption(final_text)
+            await query.edit_message_caption(thanks_text)
         else:
-            query.edit_message_text(final_text)
-        return ConversationHandler.END
-    else:
-        if query.message.photo:
-            query.edit_message_caption("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
-        else:
-            query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново, натиснувши /start.")
-        return ConversationHandler.END
+            await query.edit_message_text(thanks_text)
 
-def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    update.message.reply_text("Оголошення скасовано.", reply_markup=ReplyKeyboardRemove())
+    else:
+        # Скасування
+        if query.message.photo:
+            await query.edit_message_caption("Оголошення скасовано. Якщо бажаєте, почніть заново /start.")
+        else:
+            await query.edit_message_text("Оголошення скасовано. Якщо бажаєте, почніть заново /start.")
+
     return ConversationHandler.END
 
-# --- Адміністративні команди --- #
+# --------------------------------------------------------------------
+#                       6. ФАЛЛБЕК / CANCEL
+# --------------------------------------------------------------------
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Якщо користувач увів /cancel у будь-який момент — завершуємо розмову.
+    """
+    await update.message.reply_text("Оголошення скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
-def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
+# --------------------------------------------------------------------
+#                    7. АДМІНІСТРАТИВНІ КОМАНДИ
+# --------------------------------------------------------------------
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Команда /broadcast (лише для ADMIN_ID).
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
         return
 
     if context.args:
         message_to_broadcast = " ".join(context.args)
-        CHANNEL_ID = -1001234567890  # Замініть на фактичний ID каналу або групи
+        # Вкажіть, куди відправляти розсилку (канал/група)
+        CHANNEL_ID = -1001234567890
         try:
-            context.bot.send_message(chat_id=CHANNEL_ID, text=message_to_broadcast)
-            update.message.reply_text("✅ Повідомлення відправлено до каналу.")
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=message_to_broadcast)
+            await update.message.reply_text("✅ Повідомлення відправлено до каналу.")
         except Exception as e:
             logger.error(f"Помилка розсилки: {e}")
-            update.message.reply_text("🚫 Помилка при відправленні повідомлення.")
+            await update.message.reply_text("🚫 Помилка при відправленні повідомлення.")
     else:
-        update.message.reply_text("Введіть текст повідомлення після команди /broadcast.")
+        await update.message.reply_text("Введіть текст повідомлення після команди /broadcast.")
 
-def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
-        return
-    update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
-
-def main():
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Основна функція запуску бота.
-    Використовує webhook (якщо працюємо на Heroku) або polling.
+    Команда /stats для перегляду кількості оголошень (лише для ADMIN_ID).
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 Недостатньо прав для виконання цієї команди.")
+        return
+
+    await update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
+
+# --------------------------------------------------------------------
+#                       8. MAIN (WEBHOOK / POLLING)
+# --------------------------------------------------------------------
+async def main():
+    """
+    Основна асинхронна функція, що створює Application, 
+    реєструє хендлери та запускає бота (webhook/polling).
     """
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Побудова розмови
     conv_handler = ConversationHandler(
         entry_points=[
+            # Натискання кнопки «Розмістити оголошення» + /start
             CallbackQueryHandler(post_ad_callback, pattern="^post_ad$"),
             CommandHandler("start", start),
         ],
         states={
-            AD_DETAILS: [MessageHandler(filters.TEXT | filters.PHOTO, ad_details_handler)],
-            CONFIRMATION1: [CallbackQueryHandler(confirmation_handler_1, pattern="^(confirm1|cancel)$")],
-            CONFIRMATION2: [CallbackQueryHandler(confirmation_handler_2, pattern="^(publish|cancel)$")],
+            COLLECT: [
+                MessageHandler(filters.TEXT | filters.PHOTO, collect_data),
+                # Якщо користувач вводить /done (замість тексту)
+                # — сам командний хендлер не потрібен, бо ми перевіряємо /done в collect_data
+            ],
+            CONFIRM1: [
+                CallbackQueryHandler(confirmation_handler_1, pattern="^(confirm1|cancel)$"),
+            ],
+            CONFIRM2: [
+                CallbackQueryHandler(confirmation_handler_2, pattern="^(publish|cancel)$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_user=True,
+        per_chat=True,
+        per_message=True,  # Щоб CallbackQueryHandler відстежувався у кожному повідомленні
     )
 
+    # Реєструємо розмову та адміністративні команди
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
 
+    # Запускаємо або Webhook (Heroku) або Polling (локально)
     port = int(os.environ.get("PORT", "8443"))
     HEROKU_APP_NAME = os.environ.get("HEROKU_APP_NAME")
     if HEROKU_APP_NAME:
         webhook_url = f"https://{HEROKU_APP_NAME}.herokuapp.com/{BOT_TOKEN}"
-        application.run_webhook(
+        # Запускаємо webhook
+        await application.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=BOT_TOKEN,
             webhook_url=webhook_url,
-            close_loop=False,
         )
     else:
-        application.run_polling(close_loop=False)
+        # Запускаємо звичайний long-polling
+        await application.run_polling()
 
+# Точка входу
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
