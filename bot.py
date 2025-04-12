@@ -365,7 +365,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     # Замените "YourBotUsername" на ваш действительный юзернейм бота (без @)
     bot_username = "YourBotUsername"
-    button = InlineKeyboardButton("Розмістити оголошення", url=f"https://t.me/{bot_username}")
+    button = InlineKeyboardButton("Публікація", url=f"https://t.me/{bot_username}")
     markup = InlineKeyboardMarkup([[button]])
 
     try:
