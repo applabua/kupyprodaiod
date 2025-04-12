@@ -42,14 +42,17 @@ BROADCAST_BUTTON_URL = 13
 # ==== ВАЖНО! Укажите актуальный токен вашего бота ====
 BOT_TOKEN = "7574826063:AAF4bq0_bvC1jSl0ynrWyaH_fGtyLi7j5Cw"
 
-# ID вашего Telegram-аккаунта (для команд /broadcast и /stats)
+# ID вашего Telegram-аккаунта (для команд /broadcast, /stats, /postchannel)
 ADMIN_ID = 2045410830
 
 # Счётчик объявлений
 announcement_count = 0
 
+# ID канала для постов и рассылки
+CHANNEL_ID = 1002647717586  
+
 # ----------------------------------------------
-# 2) Команды для работы с объявлениями (как прежде)
+# 2) Команды для работы с объявлениями
 # ----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
@@ -300,8 +303,6 @@ async def broadcast_final(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     Отправляет сообщение в заданный канал, добавляя кнопку если она указана.
     """
-    # Обновлённый ID канала
-    CHANNEL_ID = 1002647717586  
     text = context.user_data.get("broadcast_text", "")
     # Если были переданы данные для кнопки, создаём разметку
     if "broadcast_button_label" in context.user_data and "broadcast_button_url" in context.user_data:
@@ -335,7 +336,7 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 # ----------------------------------------------
-# 4) Команда статистики (как прежде)
+# 4) Команда статистики (для ADMIN)
 # ----------------------------------------------
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -347,7 +348,40 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"📊 Статистика:\nКількість оголошень: {announcement_count}")
 
 # ----------------------------------------------
-# 5) Основная функция main() для запуска (webhook / polling)
+# 5) Новая команда для отправки поста в канал
+# ----------------------------------------------
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Отправляет пост в канал с информацией о том, что розміщення оголошення можливе через бота,
+    с кнопкой "Розмістити оголошення", ведущей на бота, и закрепляет сообщение.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("🚫 У вас немає прав для виконання цієї команди.")
+        return
+
+    post_text = (
+        "📢 Розміщення оголошень через бота!\n\n"
+        "Щоб розмістити ваше оголошення, натисніть кнопку нижче."
+    )
+    # Замените "YourBotUsername" на ваш действительный юзернейм бота (без @)
+    bot_username = "YourBotUsername"
+    button = InlineKeyboardButton("Розмістити оголошення", url=f"https://t.me/{bot_username}")
+    markup = InlineKeyboardMarkup([[button]])
+
+    try:
+        message = await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=post_text,
+            reply_markup=markup
+        )
+        await context.bot.pin_chat_message(chat_id=CHANNEL_ID, message_id=message.message_id, disable_notification=True)
+        await update.message.reply_text("✅ Пост успішно відправлено та закріплено в каналі.")
+    except Exception as e:
+        logger.error(f"Помилка при публікації поста в каналі: {e}")
+        await update.message.reply_text("🚫 Помилка при відправці повідомлення в канал.")
+
+# ----------------------------------------------
+# 6) Основная функция main() для запуска (webhook / polling)
 # ----------------------------------------------
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
@@ -369,7 +403,7 @@ async def main():
     )
     application.add_handler(conv_handler)
 
-    # Диалог для рассылки (broadcast) с кнопочным выбором для кнопки-ссылки
+    # Диалог для рассылки (broadcast)
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast_start)],
         states={
@@ -385,6 +419,7 @@ async def main():
     application.add_handler(broadcast_handler)
 
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("postchannel", channel_post_handler))
 
     port = int(os.environ.get("PORT", "8443"))
     HEROKU_APP_NAME = os.environ.get("HEROKU_APP_NAME")
